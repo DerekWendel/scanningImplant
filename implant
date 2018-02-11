@@ -90,7 +90,6 @@ def scan_interface(iface, s_ip, s_mac, t_mac, icmp):
 			# tcp scan
 			tcp = {}
 			for i in xrange(1, 2 ** 16):
-				print "scanning port " + str(i)
 				result = port_scan(str(ip),i)
 				if result == 0:
 					print "port <" + str(i) + "> is open"
