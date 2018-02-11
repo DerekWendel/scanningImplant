@@ -1,0 +1,130 @@
+#!/usr/bin/python
+import socket
+import struct
+import netifaces
+from netaddr import *
+from threading import Thread
+import json
+
+# hard-coded service identification by port
+# TODO fix this to detect service more rigorously
+def identify_port(port):
+	if port == 22:
+		return "ssh"
+	elif port == 80:
+		return "http"
+	elif port == 23:
+		return "telnet"
+	elif port == "7":
+		return "echo"
+	elif port in [21,20]:
+		return "ftp"
+	elif port in [25,465,587]:
+		return "smtp"
+	return "other"
+
+# return a dictionary of interface IPs to subnet mask
+# with corresponding mac addresses
+def get_network_space():
+	ifaces = netifaces.interfaces()
+	ips = {}
+	for iface in ifaces:
+		addrs = netifaces.ifaddresses(iface)
+		ips[iface] = {'addr': [addrs[netifaces.AF_INET][0]['addr']], 'netmask': addrs[netifaces.AF_INET][0]['netmask'], 'mac': addrs[netifaces.AF_LINK][0]['addr']}
+	return ips
+		
+# write custom arp request using the ips provided
+def form_arp(s_ip, s_mac, t_ip, t_mac, operation):
+
+	# Ethernet header
+	ethernet_header = t_mac					# Destination MAC
+	ethernet_header += s_mac				# Source MAC
+	ethernet_header += "\x08\x06"			# ARP Type: 0x0806
+	
+	# Build arp packet
+	arp_data = "\x00\x01"					# Ethernet type
+	arp_data += "\x08\x00"					# IP Protocol
+	arp_data += "\x06"						# Hardware Addr length
+	arp_data += "\x04"						# Protocol Addr length
+	if operation == "request":
+		arp_data += "\x00\x01"				# Operation Request
+	else:
+		arp_data += "\x00\x02"				# Operation Reply
+	arp_data += s_mac						# Sender hardware address
+	arp_data += s_ip						# Sender protocol address
+	arp_data += t_mac						# Target hardware address
+	arp_data += t_ip						# Target protocol address
+
+	return ethernet_header + arp_data
+
+def port_scan(host, port):
+	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	sock.settimeout(0.1)
+	return sock.connect_ex((host,port))
+
+def scan_interface(iface, s_ip, s_mac, t_mac, icmp):
+	threads = []
+	info = {}
+	for ip in IPNetwork(icmp):
+		t_ip = socket.inet_aton(str(ip))
+		
+		# send custom arp packet
+		arp = form_arp(s_ip, s_mac, t_ip, t_mac, "request")
+		sock = socket.socket(socket.PF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+		sock.bind((iface, 0))
+		t1 = Thread(target=sock.send, args=(arp,))
+		threads.append(t1)
+
+		# receive reply for this host
+		t1.start()
+		response = sock.recv(60)
+		ip_info = {}
+		if response != "":
+			print "arp reply from <" + str(ip) + "> ... scanning ports"
+			t_mac = response[6:12]
+			mac = t_mac.encode('hex')
+			
+			# save information in dictionary
+			ip_info["mac"] = mac
+			
+			# tcp scan
+			tcp = {}
+			for i in xrange(1, 2 ** 16):
+				print "scanning port " + str(i)
+				result = port_scan(str(ip),i)
+				if result == 0:
+					print "port <" + str(i) + "> is open"
+					tcp[str(i)] = identify_port(i)
+			if len(tcp) > 0:
+				ip_info["tcp"] = tcp
+
+			# append this entry
+			info[str(ip)] = ip_info
+	return info
+
+ifaces = get_network_space()
+
+data = {}
+sub_data = {}
+for iface in ifaces:
+	# fields of this interface
+	addr = ifaces[iface]['addr'][0]
+	mask = ifaces[iface]['netmask']
+	mac = ifaces[iface]['mac']
+
+	# write these fields as bit representations
+	s_ip = socket.inet_aton(str(addr))
+	s_mac = mac.replace(':', '').decode('hex')
+	b_mac = "\xff" * 6
+	
+	# for looping through the subnet
+	icmp = addr + "/" + mask
+	
+	if iface != 'lo':
+		print "scanning interface <" + iface + "> ..."
+		info = scan_interface(iface, s_ip, s_mac, b_mac, icmp)
+		sub_data[iface] = info
+	
+data["machines"] = sub_data
+file = open('results.json', 'w+')
+json.dump(data, file)
