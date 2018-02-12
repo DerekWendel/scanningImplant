@@ -5,23 +5,38 @@ import netifaces
 from netaddr import *
 from threading import Thread
 import json
+import time
+
+tcp = []
 
 # hard-coded service identification by port
 # TODO fix this to detect service more rigorously
-def identify_port(port):
-	if port == 22:
-		return "ssh"
-	elif port == 80:
-		return "http"
-	elif port == 23:
-		return "telnet"
-	elif port == "7":
-		return "echo"
-	elif port in [21,20]:
-		return "ftp"
-	elif port in [25,465,587]:
-		return "smtp"
-	return "other"
+def identify_port(host, port):
+	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	#result = s.connect_ex((host, port))
+	threads = []
+	try: 
+		result = sock.connect_ex((host, port))
+		response = sock.recv(2048)
+		if "SSH" in str(response):
+			return "ssh"
+		elif "FTP" in str(response):
+			return "ftp" 
+	except:
+		# if there is a connection failure, use defaults
+		if port == 22:
+			return "ssh"
+		elif port == 80:
+			return "http"
+		elif port == 23:
+			return "telnet"
+		elif port == "7":
+			return "echo"
+		elif port in [21,20]:
+			return "ftp"
+		elif port in [25,465,587]:
+			return "smtp"
+		return "other"
 
 # return a dictionary of interface IPs to subnet mask
 # with corresponding mac addresses
@@ -58,9 +73,13 @@ def form_arp(s_ip, s_mac, t_ip, t_mac, operation):
 	return ethernet_header + arp_data
 
 def port_scan(host, port):
+	global tcp
 	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 	sock.settimeout(0.1)
-	return sock.connect_ex((host,port))
+	result = sock.connect_ex((host,port))
+	if result == 0:
+		print "port <" + str(port) + "> is open"
+		tcp[str(port)] = identify_port(host, port)
 
 def scan_interface(iface, s_ip, s_mac, t_mac, icmp):
 	threads = []
@@ -72,28 +91,50 @@ def scan_interface(iface, s_ip, s_mac, t_mac, icmp):
 		arp = form_arp(s_ip, s_mac, t_ip, t_mac, "request")
 		sock = socket.socket(socket.PF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
 		sock.bind((iface, 0))
+		sock.settimeout(0.3)
 		t1 = Thread(target=sock.send, args=(arp,))
 		threads.append(t1)
 
 		# receive reply for this host
 		t1.start()
-		response = sock.recv(60)
+		timeout = time.time() + 1
+		enet = []
+		opcode = '\x00\x00'
+		while time.time() < timeout:
+			try:
+				response = sock.recv(60)
+			except:
+				continue
+			if response != "":
+				ethernet_header = response[0:14]
+				enet = struct.unpack("!6s6s2s", ethernet_header)
+				arp_header = response[14:42]
+				arp_det = struct.unpack("2s2s1s1s2s6s4s6s4s", arp_header)
+				opcode = arp_det[4]
+				if enet[2] == '\x08\x06' and opcode == '\x00\x02':
+					timeout = time.time()
 		ip_info = {}
-		if response != "":
-			print "arp reply from <" + str(ip) + "> ... scanning ports"
-			t_mac = response[6:12]
-			mac = t_mac.encode('hex')
-			
-			# save information in dictionary
-			ip_info["mac"] = mac
+
+		# got response, so process this host
+		if (len(enet) > 0 and enet[2] == '\x08\x06' and opcode == '\x00\x02') or t_ip == s_ip:
+			if t_ip == s_ip:
+				print "Oh! I am <" + str(ip) + "> ... scanning my ports"
+				formatted = ':'.join(s_mac.encode('hex')[i:i+2] for i in range(0, len(s_mac.encode('hex')), 2))
+				ip_info["mac"] = formatted
+			else:
+				print "arp reply from <" + str(ip) + "> ... scanning ports"
+				formatted = ':'.join(enet[1].encode('hex')[i:i+2] for i in range(0, len(enet[1].encode('hex')), 2))
+				ip_info["mac"] = formatted
 			
 			# tcp scan
+			global tcp
 			tcp = {}
+			threads = []
 			for i in xrange(1, 2 ** 16):
-				result = port_scan(str(ip),i)
-				if result == 0:
-					print "port <" + str(i) + "> is open"
-					tcp[str(i)] = identify_port(i)
+				t = Thread(target=port_scan, args=(str(ip),i,))
+				threads.append(t)
+				t.start()
+			[x.join() for x in threads]
 			if len(tcp) > 0:
 				ip_info["tcp"] = tcp
 
@@ -124,6 +165,7 @@ for iface in ifaces:
 		info = scan_interface(iface, s_ip, s_mac, b_mac, icmp)
 		sub_data[iface] = info
 	
+print sub_data
 data["machines"] = sub_data
 file = open('results.json', 'w+')
 json.dump(data, file)
