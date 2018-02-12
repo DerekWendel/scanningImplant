@@ -23,20 +23,21 @@ def identify_port(host, port):
 		elif "FTP" in str(response):
 			return "ftp" 
 	except:
-		# if there is a connection failure, use defaults
-		if port == 22:
-			return "ssh"
-		elif port == 80:
-			return "http"
-		elif port == 23:
-			return "telnet"
-		elif port == "7":
-			return "echo"
-		elif port in [21,20]:
-			return "ftp"
-		elif port in [25,465,587]:
-			return "smtp"
-		return "other"
+		print "failed to establish connection with port"
+	# if there is a connection failure, use defaults
+	if port == 22:
+		return "ssh"
+	elif port == 80:
+		return "http"
+	elif port == 23:
+		return "telnet"
+	elif port == "7":
+		return "echo"
+	elif port in [21,20]:
+		return "ftp"
+	elif port in [25,465,587]:
+		return "smtp"
+	return "other"
 
 # return a dictionary of interface IPs to subnet mask
 # with corresponding mac addresses
