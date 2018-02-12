@@ -31,7 +31,7 @@ def identify_port(host, port):
 		return "http"
 	elif port == 23:
 		return "telnet"
-	elif port == "7":
+	elif port == 7:
 		return "echo"
 	elif port in [21,20]:
 		return "ftp"
